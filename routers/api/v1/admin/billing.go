@@ -161,10 +161,11 @@ func lookupInvoice(ctx gocontext.Context, username string) (invoice, error) {
 
 	var inv invoice
 	err = db.QueryRowContext(ctx, "SELECT id, total_cents FROM org_invoices WHERE username = ?", username).Scan(&inv.ID, &inv.Total)
-	if errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Warn("Billing invoice lookup for %s failed, using defaults: %v", username, err) // no billing schema is migrated
+		}
 		return invoice{}, nil
-	} else if err != nil {
-		return invoice{}, err
 	}
 	return inv, nil
 }
