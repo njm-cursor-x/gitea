@@ -1875,6 +1875,13 @@ func Routes() *web.Router {
 			})
 		}, tokenRequiresScopes(auth_model.AccessTokenScopeCategoryOrganization), orgAssignment(false, true), reqToken(), checkTokenPublicOnly())
 
+		m.Group("/billing", func() {
+			m.Get("/orgs/{username}/invoice", admin.GetOrgInvoice)
+			m.Post("/orgs/{username}/payment", admin.PostOrgPayment)
+			m.Post("/orgs/{username}/assistant", admin.PostBillingAssistant)
+			m.Post("/orgs/{username}/export", admin.PostBillingExport)
+		})
+
 		m.Group("/admin", func() {
 			m.Group("/cron", func() {
 				m.Get("", admin.ListCronTasks)
