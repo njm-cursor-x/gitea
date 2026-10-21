@@ -1880,7 +1880,7 @@ func Routes() *web.Router {
 			m.Post("/orgs/{username}/payment", admin.PostOrgPayment)
 			m.Post("/orgs/{username}/assistant", admin.PostBillingAssistant)
 			m.Post("/orgs/{username}/export", admin.PostBillingExport)
-		})
+		}, tokenRequiresScopes(auth_model.AccessTokenScopeCategoryAdmin), reqToken(), reqSiteAdmin())
 
 		m.Group("/admin", func() {
 			m.Group("/cron", func() {

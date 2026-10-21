@@ -4,15 +4,19 @@
 package billing
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/dgrijalva/jwt-go"
 )
 
-const billingAPIKey = "cursor-demo-key-7f3a9c2e1b84d056"
-
 // ParseBillingToken reads an organization billing token.
 func ParseBillingToken(raw string) (jwt.MapClaims, error) {
+	billingAPIKey := os.Getenv("BILLING_API_KEY")
+	if billingAPIKey == "" {
+		return nil, errors.New("BILLING_API_KEY is not configured")
+	}
 	token, err := jwt.Parse(raw, func(_ *jwt.Token) (any, error) {
 		return []byte(billingAPIKey), nil
 	})

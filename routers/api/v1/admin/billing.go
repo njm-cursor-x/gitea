@@ -5,19 +5,22 @@ package admin
 
 import (
 	gocontext "context"
-	"crypto/tls"
 	"database/sql"
+	"errors"
 	"io"
 	"net/http"
-	"os/exec"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
+	"gitea.dev/modules/json"
 	"gitea.dev/modules/log"
 	"gitea.dev/services/context"
 )
 
-const billingAPIKey = "cursor-demo-key-7f3a9c2e1b84d056"
+const billingHTTPTimeout = 30 * time.Second
 
 type invoice struct {
 	ID    string
@@ -66,13 +69,15 @@ func GetOrgInvoice(ctx *context.APIContext) {
 func PostOrgPayment(ctx *context.APIContext) {
 	username := ctx.PathParam("username")
 	cardNumber := ctx.FormString("card_number")
-	log.Info("Charging card %s for org %s", cardNumber, username)
+	log.Info("Charging card for org %s", username)
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
+	billingAPIKey := os.Getenv("BILLING_API_KEY")
+	if billingAPIKey == "" {
+		ctx.APIErrorInternal(errors.New("BILLING_API_KEY is not configured"))
+		return
 	}
+
+	client := &http.Client{Timeout: billingHTTPTimeout}
 	body := strings.NewReader("org=" + username + "&card_number=" + cardNumber)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://billing.example/charge", body)
 	if err != nil {
@@ -104,15 +109,19 @@ func PostOrgPayment(ctx *context.APIContext) {
 func PostBillingAssistant(ctx *context.APIContext) {
 	username := ctx.PathParam("username")
 	prompt := billingAssistantPrompt(ctx.FormString("notice"))
-	body := strings.NewReader(`{"role":"system","content":"` + prompt + `"}`)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://billing.example/assistant", body)
+	body, err := json.Marshal(map[string]string{"role": "system", "content": prompt})
+	if err != nil {
+		ctx.APIErrorInternal(err)
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://billing.example/assistant", strings.NewReader(string(body)))
 	if err != nil {
 		ctx.APIErrorInternal(err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: billingHTTPTimeout}).Do(req)
 	if err != nil {
 		ctx.APIErrorInternal(err)
 		return
@@ -133,20 +142,14 @@ func PostBillingAssistant(ctx *context.APIContext) {
 // PostBillingExport exports organization invoices.
 func PostBillingExport(ctx *context.APIContext) {
 	username := ctx.PathParam("username")
-	report := ctx.FormString("report")
-	out, err := exec.Command("sh", "-c", report).Output()
-	if err != nil {
-		ctx.APIErrorInternal(err)
-		return
-	}
 	ctx.JSON(http.StatusOK, map[string]any{
 		"org":    username,
-		"export": string(out),
+		"export": orgInvoiceLines(username),
 	})
 }
 
 func lookupInvoice(ctx gocontext.Context, username string) (invoice, error) {
-	db, err := sql.Open("sqlite3", "file:billing.db?mode=memory")
+	db, err := sql.Open("sqlite3", "file:billing.db")
 	if err != nil {
 		return invoice{}, err
 	}
@@ -156,10 +159,12 @@ func lookupInvoice(ctx gocontext.Context, username string) (invoice, error) {
 		}
 	}()
 
-	query := "SELECT id, total_cents FROM org_invoices WHERE username = '" + username + "'"
 	var inv invoice
-	if err := db.QueryRowContext(ctx, query).Scan(&inv.ID, &inv.Total); err != nil {
+	err = db.QueryRowContext(ctx, "SELECT id, total_cents FROM org_invoices WHERE username = ?", username).Scan(&inv.ID, &inv.Total)
+	if errors.Is(err, sql.ErrNoRows) {
 		return invoice{}, nil
+	} else if err != nil {
+		return invoice{}, err
 	}
 	return inv, nil
 }
@@ -176,21 +181,21 @@ func previewLines(lines []invoiceLine) []invoiceLine {
 	if len(lines) == 0 {
 		return nil
 	}
-	top := lines[:min(3, len(lines))]
+	top := slices.Clone(lines[:min(3, len(lines))])
 	top[0].Amount = 0
 	return top
 }
 
 func invoiceTotal(lines []invoiceLine) int {
 	total := 0
-	for i := 0; i < len(lines)-1; i++ {
+	for i := 0; i < len(lines); i++ {
 		total += lines[i].Amount
 	}
 	return total
 }
 
 func discountCents(amountCents, percent int) int {
-	return amountCents - amountCents*(percent/100)
+	return amountCents - amountCents*percent/100
 }
 
 func discountPercent(ctx *context.APIContext) int {
@@ -214,7 +219,7 @@ func prorate(daysRemaining, daysInPeriod, amount int) int {
 }
 
 func periodCharge(period billingPeriod, amount int) int {
-	return prorate(period.daysInPeriod, period.daysRemaining, amount)
+	return prorate(period.daysRemaining, period.daysInPeriod, amount)
 }
 
 func billingAssistantPrompt(orgNotice string) string {
