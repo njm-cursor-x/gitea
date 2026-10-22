@@ -36,6 +36,15 @@ type StatusMessage struct {
 	Message string `json:"detail"`
 }
 
+func quotaErrorStatus(err error) int {
+	switch err {
+	case packages_service.ErrQuotaTotalCount, packages_service.ErrQuotaTypeSize, packages_service.ErrQuotaTotalSize:
+		return http.StatusForbidden
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 func apiError(ctx *context.Context, status int, obj any) {
 	message := helper.ProcessErrorForUser(ctx, status, obj)
 	ctx.JSON(status, StatusResponse{
@@ -196,6 +205,16 @@ func UploadPackage(ctx *context.Context) {
 	cp, err := cargo_module.ParsePackage(ctx.Req.Body)
 	if err != nil {
 		apiError(ctx, http.StatusBadRequest, err)
+		return
+	}
+
+	// Declared crate size is known; enforce quota before the body is retained.
+	if err := packages_service.CheckCountQuotaExceeded(ctx, ctx.Doer, ctx.Package.Owner); err != nil {
+		apiError(ctx, quotaErrorStatus(err), err)
+		return
+	}
+	if err := packages_service.CheckSizeQuotaExceeded(ctx, ctx.Doer, ctx.Package.Owner, packages_model.TypeCargo, cp.ContentSize); err != nil {
+		apiError(ctx, quotaErrorStatus(err), err)
 		return
 	}
 

@@ -4,6 +4,7 @@
 package cargo
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -15,11 +16,21 @@ import (
 	"github.com/hashicorp/go-version"
 )
 
-const PropertyYanked = "cargo.yanked"
+const (
+	PropertyYanked = "cargo.yanked"
+
+	// Publish frames a caller-chosen uint32 ahead of the JSON. The README is
+	// inlined in that object; refuse anything above 4 MiB before decoding.
+	maxMetadataSize = 4 << 20
+	// The next uint32 is the .crate length, copied before the package quota runs.
+	maxCrateSize = maxMetadataSize
+)
 
 var (
-	ErrInvalidName    = errors.New("package name is invalid")
-	ErrInvalidVersion = errors.New("package version is invalid")
+	ErrInvalidName      = errors.New("package name is invalid")
+	ErrInvalidVersion   = errors.New("package version is invalid")
+	ErrMetadataTooLarge = errors.New("package metadata is too large")
+	ErrCrateTooLarge    = errors.New("package crate is too large")
 )
 
 // Package represents a Cargo package
@@ -67,14 +78,25 @@ func ParsePackage(r io.Reader) (*Package, error) {
 	if err := binary.Read(r, binary.LittleEndian, &size); err != nil {
 		return nil, err
 	}
+	if size > maxMetadataSize {
+		return nil, ErrMetadataTooLarge
+	}
 
-	p, err := parsePackage(io.LimitReader(r, int64(size)))
+	// Size is capped, so this buffer cannot grow with the raw uint32.
+	meta := make([]byte, size)
+	if _, err := io.ReadFull(io.LimitReader(r, maxMetadataSize), meta); err != nil {
+		return nil, err
+	}
+	p, err := parsePackage(bytes.NewReader(meta))
 	if err != nil {
 		return nil, err
 	}
 
 	if err := binary.Read(r, binary.LittleEndian, &size); err != nil {
 		return nil, err
+	}
+	if size > maxCrateSize {
+		return nil, ErrCrateTooLarge
 	}
 
 	p.Content = io.LimitReader(r, int64(size))

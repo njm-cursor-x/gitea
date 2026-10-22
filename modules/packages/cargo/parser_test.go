@@ -46,6 +46,31 @@ func TestParsePackage(t *testing.T) {
 		return &buf
 	}
 
+	t.Run("MetadataTooLarge", func(t *testing.T) {
+		for _, size := range []uint32{maxMetadataSize + 1, ^uint32(0)} {
+			var buf bytes.Buffer
+			binary.Write(&buf, binary.LittleEndian, size)
+
+			cp, err := ParsePackage(&buf)
+			assert.Nil(t, cp)
+			assert.ErrorIs(t, err, ErrMetadataTooLarge)
+		}
+	})
+
+	t.Run("CrateTooLarge", func(t *testing.T) {
+		metadata := `{"name":"test","vers":"1.0.0"}`
+		for _, size := range []uint32{maxCrateSize + 1, ^uint32(0)} {
+			var buf bytes.Buffer
+			binary.Write(&buf, binary.LittleEndian, uint32(len(metadata)))
+			buf.WriteString(metadata)
+			binary.Write(&buf, binary.LittleEndian, size)
+
+			cp, err := ParsePackage(&buf)
+			assert.Nil(t, cp)
+			assert.ErrorIs(t, err, ErrCrateTooLarge)
+		}
+	})
+
 	t.Run("InvalidName", func(t *testing.T) {
 		for _, name := range []string{"", "0test", "-test", "_test", strings.Repeat("a", 65)} {
 			data := createPackage(makeDefaultPackageMeta(name, "1.0.0"))
